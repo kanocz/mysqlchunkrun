@@ -16,6 +16,7 @@ var (
 	dbMaster = flag.String("master", "root:@tcp(localhost:3306)/?charset=utf8mb4", "connection string for master")
 	dbSlave  = flag.String("slave", "", "connection string for slave")
 	dbMaxLag = flag.Int("maxlag", 10, "maximum allowed slave lag")
+	dbPause  = flag.Duration("pause", 10*time.Millisecond, "time to sleep between queries")
 )
 
 // return current master "replication position"
@@ -133,28 +134,7 @@ func getSlaveLag(slave *sql.DB) (int, error) {
 	return slaveStatus.SecondsBehindMaster, nil
 }
 
-func main() {
-
-	flag.Parse()
-
-	master, err := sql.Open("mysql", *dbMaster)
-	if nil != err {
-		log.Fatalln("Error connecting to database (master): ", err)
-	}
-	defer master.Close()
-
-	slave, err := sql.Open("mysql", *dbSlave)
-	if nil != err {
-		log.Fatalln("Error connecting to database (slave): ", err)
-	}
-	defer slave.Close()
-
-	query := flag.Arg(0)
-	if "" == query {
-		fmt.Println("Please specify query as last argument")
-		return
-	}
-
+func runOneQuery(master *sql.DB, slave *sql.DB, query string) {
 	stmt, err := master.Prepare(query)
 	if nil != err {
 		log.Fatalln("Error preparing query: ", err)
@@ -196,5 +176,32 @@ func main() {
 		}
 
 		os.Stdout.Write([]byte("."))
+		time.Sleep(*dbPause)
 	}
+}
+
+func main() {
+
+	flag.Parse()
+
+	master, err := sql.Open("mysql", *dbMaster)
+	if nil != err {
+		log.Fatalln("Error connecting to database (master): ", err)
+	}
+	defer master.Close()
+
+	slave, err := sql.Open("mysql", *dbSlave)
+	if nil != err {
+		log.Fatalln("Error connecting to database (slave): ", err)
+	}
+	defer slave.Close()
+
+	query := flag.Arg(0)
+	if "" == query {
+		fmt.Println("Please specify query as last argument")
+		return
+	}
+
+	runOneQuery(master, slave, query)
+
 }
