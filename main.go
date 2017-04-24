@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"database/sql"
 	"errors"
 	"flag"
@@ -17,6 +18,7 @@ var (
 	dbSlave  = flag.String("slave", "", "connection string for slave")
 	dbMaxLag = flag.Int("maxlag", 10, "maximum allowed slave lag")
 	dbPause  = flag.Duration("pause", 10*time.Millisecond, "time to sleep between queries")
+	dbBash   = flag.String("bash", "", "file with a list of queries")
 )
 
 // return current master "replication position"
@@ -180,6 +182,57 @@ func runOneQuery(master *sql.DB, slave *sql.DB, query string) {
 	}
 }
 
+func runBashQueries(master *sql.DB, slave *sql.DB, queries []string) {
+	lineno := 1
+	for _, query := range queries {
+		_, err := master.Exec(query)
+
+		if nil != err {
+			log.Fatalf("[line %d] Error executing query \"%s\": %s\n", lineno, query, err.Error())
+		}
+
+		logFile, logPos, err := getMasterPost(master)
+		if nil != err {
+			log.Fatalln("Error reading master position: ", err)
+		}
+
+		err = waitForSlave(slave, logFile, logPos)
+		if nil != err {
+			log.Fatalln("Error waiting for slave: ", err)
+		}
+
+		for {
+			lag, err := getSlaveLag(slave)
+			if nil != err {
+				log.Fatalln("get lag error: ", err)
+			}
+			if lag <= *dbMaxLag {
+				break
+			}
+			time.Sleep(time.Second)
+		}
+
+		os.Stdout.Write([]byte("."))
+		time.Sleep(*dbPause)
+		lineno++
+	}
+}
+
+func readLines(path string) ([]string, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+
+	var lines []string
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		lines = append(lines, scanner.Text())
+	}
+	return lines, scanner.Err()
+}
+
 func main() {
 
 	flag.Parse()
@@ -196,12 +249,21 @@ func main() {
 	}
 	defer slave.Close()
 
+	if "" != *dbBash {
+		list, err := readLines(*dbBash)
+		if nil != err {
+			log.Fatalf("Error loading queries list from \"%s\": %s\n", *dbBash, err)
+		}
+		runBashQueries(master, slave, list)
+		return
+	}
+
 	query := flag.Arg(0)
 	if "" == query {
-		fmt.Println("Please specify query as last argument")
+		fmt.Println("Please specify query as last argument or use -bash option")
+		flag.Usage()
 		return
 	}
 
 	runOneQuery(master, slave, query)
-
 }
